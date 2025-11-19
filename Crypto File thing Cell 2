@@ -1,0 +1,117 @@
+# --- CELL 2: WRITE THE CORE PREDICTION SCRIPT TO DISK ---
+import os
+import sys
+
+# The actual quantum prediction logic, ready to be executed by Python 3.9.
+# This content will be written to a file named 'run_crypto_predictor_core.py'.
+script_content = """
+# --- START CORE PREDICTOR SCRIPT ---
+import os
+import sys
+import pandas as pd
+import numpy as np
+import warnings
+
+CSV_FILENAME = 'crypto_data.csv'
+if not os.path.exists(CSV_FILENAME):
+    print("❌ ERROR: '{CSV_FILENAME}' is missing.\\n👉 Run 'local_data_generator.py' in VS Code and upload the CSV.".format(CSV_FILENAME=CSV_FILENAME))
+    sys.exit(1)
+
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+warnings.filterwarnings("ignore")
+sys.stderr = sys.stdout
+
+print("⏳ INITIALIZING QUANTUM ENVIRONMENT...")
+try:
+    import tensorflow as tf
+    import tensorflow_quantum as tfq
+    import cirq
+    import sympy
+except ImportError:
+    print("❌ INSTALL ERROR: Re-run Cell 1.")
+    sys.exit(1)
+
+print("✅ LIBRARIES LOADED.")
+
+SYMBOL = 'BTC/USDT'
+TIMEFRAME = '4h'
+
+print("📚 LOADING DATA...")
+df_train = pd.read_csv(CSV_FILENAME)
+df_train_set = df_train.iloc[:-1]
+X_predict = df_train.iloc[-1]['Q_Feature']
+
+print("✅ DATA LOADED. Training on {length} samples.".format(length=len(df_train_set)))
+
+print("\\n🧠 TRAINING (Sine-Wave Corrected)...")
+
+q = cirq.GridQubit(0, 0)
+
+def convert_to_tensor(features):
+    circuits = []
+    if not isinstance(features, pd.Series):
+        features = pd.Series([features])
+        
+    for val in features:
+        c = cirq.Circuit()
+        c.append(cirq.ry(val * np.pi)(q))
+        circuits.append(c)
+    return tfq.convert_to_tensor(circuits)
+
+circuit_in = tf.keras.Input(shape=(), dtype=tf.string)
+
+pqc = tfq.layers.PQC(
+    cirq.Circuit(cirq.rx(sympy.Symbol('theta'))(q)), 
+    operators=cirq.X(q) 
+)
+
+output = pqc(circuit_in)
+output = tf.keras.layers.Dense(16, activation='relu')(output)
+output = tf.keras.layers.Dense(1, activation='sigmoid')(output) 
+
+model = tf.keras.Model(inputs=circuit_in, outputs=output)
+model.compile(optimizer=tf.keras.optimizers.Adam(0.01), loss='binary_crossentropy', metrics=['accuracy'])
+model.fit(convert_to_tensor(df_train_set['Q_Feature']), np.array(df_train_set['Label']), epochs=20, batch_size=32, verbose=0)
+
+print("✅ MODEL READY.")
+
+print("\\n🔮 PREDICTING NEXT 4H CANDLE...")
+
+raw_pred = model.predict(convert_to_tensor(X_predict), verbose=0)[0][0]
+
+if raw_pred > 0.5:
+    direction = "UP (Bullish)"
+    conf = raw_pred
+else:
+    direction = "DOWN (Bearish)"
+    conf = 1.0 - raw_pred
+
+human_conf = (conf - 0.5) * 200 + 50
+human_conf = min(99.9, max(50.1, human_conf))
+
+advice = "NEUTRAL (HOLD)"
+if human_conf > 55: advice = "LEAN"
+if human_conf > 65: advice = "ENTER"
+if human_conf > 75: advice = "STRONG ENTRY"
+if human_conf > 85: advice = "CRITICAL ENTRY"
+
+# Safely print the output table using string formatting/concatenation
+print("\\n" + "="*85)
+print("| {a:<10} | {b:<10} | {c:<16} | {d:<12} | {e:<18} |".format(a='ASSET', b='TIMEFRAME', c='PREDICTION', d='CONFIDENCE', e='ADVICE'))
+print("="*85)
+print("| {a:<10} | {b:<10} | {c:<16} | {d:<3}%         | {e:<18} |".format(a=SYMBOL, b=TIMEFRAME, c=direction, d=int(human_conf), e=advice))
+print("="*85)
+
+# Final outputs
+print("\\nLast Q_Feature Input Value (Proximity to Sine Wave Peak): {X_predict:.4f}".format(X_predict=X_predict))
+print("Raw Model Output (P(UP)): {raw_pred:.4f}".format(raw_pred=raw_pred))
+# --- END CORE PREDICTOR SCRIPT ---
+"""
+
+# Write the script to a temporary file
+script_filename = "run_crypto_predictor_core.py"
+with open(script_filename, "w") as f:
+    f.write(script_content)
+
+print(f"✅ Core Prediction Script '{script_filename}' written to disk.")
+print("The next cell (Cell 3) will execute this script using the Python 3.9 environment.")
