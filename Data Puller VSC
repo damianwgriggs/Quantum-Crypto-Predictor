@@ -1,0 +1,90 @@
+# --- VS CODE SCRIPT: FETCH CRYPTO DATA & GENERATE FEATURES LOCALLY ---
+import pandas as pd
+import numpy as np
+import ccxt
+import ta
+import sys
+
+# ==========================================
+# 1. PARAMETERS & DATA ACQUISITION
+# ==========================================
+# CHANGED: Switched from 'binance' to 'kraken' to bypass IP restrictions.
+EXCHANGE_ID = 'kraken'  
+SYMBOL = 'BTC/USDT'      # The trading pair you want to predict
+TIMEFRAME = '4h'         # Futures trading interval
+LOOKBACK_CANDLES = 1500  # Fetch more data to ensure we have a good training set after cleanup
+
+print(f"📡 FETCHING {LOOKBACK_CANDLES} CANDLES for {SYMBOL} ({TIMEFRAME}) on {EXCHANGE_ID.upper()}...")
+
+try:
+    exchange = getattr(ccxt, EXCHANGE_ID)()
+    # Kraken uses XBT/USD or XBT/USDT for Bitcoin
+    if EXCHANGE_ID == 'kraken':
+        # Kraken often uses XBT/USD or XBT/EUR as its main pairs. Let's use XBT/USDT if available, otherwise XBT/USD.
+        # We'll try fetching markets first to see if BTC/USDT is supported.
+        markets = exchange.load_markets()
+        if 'BTC/USDT' in markets:
+            fetch_symbol = 'BTC/USDT'
+        elif 'XBT/USDT' in markets:
+            fetch_symbol = 'XBT/USDT'
+        else:
+             # Default to XBT/USD if a direct USDT pair isn't found
+            fetch_symbol = 'XBT/USD'
+            print(f"⚠️ WARNING: BTC/USDT not found on Kraken, defaulting to {fetch_symbol}.")
+
+    else:
+        fetch_symbol = SYMBOL
+        
+    # Fetch OHLCV data
+    ohlcv = exchange.fetch_ohlcv(fetch_symbol, TIMEFRAME, limit=LOOKBACK_CANDLES)
+    df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+    df['date'] = pd.to_datetime(df['timestamp'], unit='ms')
+    df.set_index('date', inplace=True)
+    df.drop('timestamp', axis=1, inplace=True)
+    
+    if len(df) < LOOKBACK_CANDLES:
+        print(f"⚠️ WARNING: Only fetched {len(df)} candles.")
+
+except Exception as e:
+    # Changed the symbol reference back to SYMBOL for the error message in case the market fetch fails.
+    print(f"❌ DATA FETCH ERROR. Please check your network, symbol ({SYMBOL}) or try a different exchange. Error: {e}")
+    sys.exit(1)
+
+print(f"✅ DATA LOADED ({len(df)} candles).")
+
+# ==========================================
+# 2. FEATURE & TARGET GENERATION (Mirroring Colab logic)
+# ==========================================
+print("📈 CALCULATING TECHNICAL FEATURES...")
+
+# --- Feature Engineering ---
+df['RSI'] = ta.momentum.RSIIndicator(df['close'], window=14).rsi()
+macd_indicator = ta.trend.MACD(df['close'], window_fast=12, window_slow=26, window_sign=9)
+df['MACD_Hist'] = macd_indicator.macd_diff()
+df['Log_Volume'] = np.log1p(df['volume']) 
+
+# --- Normalization ---
+df['RSI_Norm'] = (df['RSI'] - 50) / 50.0  
+# Use the entire column's mean absolute deviation for stable MACD normalization
+df['MACD_Norm'] = df['MACD_Hist'] / df['MACD_Hist'].abs().mean()
+df['Vol_Norm'] = df['Log_Volume'].pct_change().clip(-0.5, 0.5)
+
+# --- Quantum Input Feature (Q_Feature) ---
+df['Q_Feature'] = (df['RSI_Norm'] + df['MACD_Norm'] + df['Vol_Norm']) / 3.0
+df['Q_Feature'] = df['Q_Feature'].clip(-0.5, 0.5)
+
+# --- Binary Target (Label) ---
+# Target is 1 if the NEXT candle's close is higher than the CURRENT close, 0 otherwise.
+df['Label'] = (df['close'].shift(-1) > df['close']).astype(int)
+
+# Clean up NaN values created by indicators and the target shift
+df.dropna(inplace=True)
+
+# Select only the features and target needed by the Colab script
+df_final = df[['Q_Feature', 'Label']].copy()
+
+# Save the file
+CSV_FILENAME = 'crypto_data.csv'
+df_final.to_csv(CSV_FILENAME, index=False)
+print(f"\n✅ SUCCESS! Saved '{CSV_FILENAME}' with {len(df_final)} samples.")
+print("👉 Now upload this file to your Google Colab environment to run Cell 2.")
