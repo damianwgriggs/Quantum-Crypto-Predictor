@@ -1,24 +1,40 @@
-# --- CELL 2: WRITE THE CORE PREDICTION SCRIPT TO DISK ---
+# This script first defines the core quantum prediction logic as a string,
+# then writes that string to 'run_crypto_predictor_core.py',
+# and finally executes the newly created file.
+
 import os
 import sys
 
-# The actual quantum prediction logic, ready to be executed by Python 3.9.
-# This content will be written to a file named 'run_crypto_predictor_core.py'.
+# The entire prediction script is contained in this triple-quoted string:
+# IMPORTANT: All indentation inside this string uses 4 spaces and has been
+# thoroughly cleaned of non-standard whitespace characters like non-breaking spaces.
 script_content = """
-# --- START CORE PREDICTOR SCRIPT ---
+
 import os
 import sys
 import pandas as pd
 import numpy as np
 import warnings
 
+# --- CONFIG ---
 CSV_FILENAME = 'crypto_data.csv'
+SYMBOL = 'BTC/USDT'
+TIMEFRAME = '1d' 
+NUM_QUBITS = 4
+NUM_LAYERS = 3 
+TRAINING_EPOCHS = 50 
+
+# Define the 4 features we will encode
+FEATURE_COLS = ['RSI_Norm', 'MACD_Norm', 'Vol_Norm', 'Q_Feature']
+
 if not os.path.exists(CSV_FILENAME):
-    print("❌ ERROR: '{CSV_FILENAME}' is missing.\\n👉 Run 'local_data_generator.py' in VS Code and upload the CSV.".format(CSV_FILENAME=CSV_FILENAME))
+    print("❌ ERROR: '{CSV_FILENAME}' is missing.\\n👉 Run a data fetching script and upload the CSV.".format(CSV_FILENAME=CSV_FILENAME))
     sys.exit(1)
 
+# Suppress TensorFlow and Python warnings
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 warnings.filterwarnings("ignore")
+# Redirect stderr to stdout to keep the output clean
 sys.stderr = sys.stdout
 
 print("⏳ INITIALIZING QUANTUM ENVIRONMENT...")
@@ -28,55 +44,99 @@ try:
     import cirq
     import sympy
 except ImportError:
-    print("❌ INSTALL ERROR: Re-run Cell 1.")
+    print("❌ INSTALL ERROR: Ensure TensorFlow Quantum is correctly installed.")
     sys.exit(1)
 
 print("✅ LIBRARIES LOADED.")
 
-SYMBOL = 'BTC/USDT'
-TIMEFRAME = '4h'
-
 print("📚 LOADING DATA...")
 df_train = pd.read_csv(CSV_FILENAME)
+
+# Use all data except the last row for training/validation
 df_train_set = df_train.iloc[:-1]
-X_predict = df_train.iloc[-1]['Q_Feature']
 
-print("✅ DATA LOADED. Training on {length} samples.".format(length=len(df_train_set)))
+# Use the last row for the final prediction input
+X_predict = df_train.iloc[-1][FEATURE_COLS] # <--- UPDATED: Selecting all 4 features for prediction
 
-print("\\n🧠 TRAINING (Sine-Wave Corrected)...")
+print("✅ DATA LOADED. Training on {length} samples with {num_feat} features.".format(length=len(df_train_set), num_feat=len(FEATURE_COLS)))
 
-q = cirq.GridQubit(0, 0)
+print("\\n🧠 TRAINING (4-Qubit PQC, 3 Layers, Multi-Feature Encoded)...") # <--- UPDATED print
 
-def convert_to_tensor(features):
+# Define the 4 qubits
+q0, q1, q2, q3 = cirq.GridQubit(0, 0), cirq.GridQubit(0, 1), cirq.GridQubit(1, 0), cirq.GridQubit(1, 1)
+qubits = [q0, q1, q2, q3] 
+
+def convert_to_tensor(features_df):
+    \"\"\"Encodes the 4 features onto the 4 qubits using Ry rotations.\"\"\"
     circuits = []
-    if not isinstance(features, pd.Series):
-        features = pd.Series([features])
-        
-    for val in features:
+    # If the input is a single prediction row (Pandas Series), wrap it in a list
+    if isinstance(features_df, pd.Series):
+        feature_list = [features_df]
+    else:
+        # Otherwise, iterate over all training rows (Pandas DataFrame)
+        feature_list = features_df.values.tolist()
+
+    for row in feature_list:
+        # row is a list of [RSI_Norm, MACD_Norm, Vol_Norm, Q_Feature]
         c = cirq.Circuit()
-        c.append(cirq.ry(val * np.pi)(q))
+        # Encode each feature onto a dedicated qubit
+        c.append(cirq.ry(row[0] * np.pi)(q0)) # RSI_Norm -> Qubit 0
+        c.append(cirq.ry(row[1] * np.pi)(q1)) # MACD_Norm -> Qubit 1
+        c.append(cirq.ry(row[2] * np.pi)(q2)) # Vol_Norm -> Qubit 2
+        c.append(cirq.ry(row[3] * np.pi)(q3)) # Q_Feature -> Qubit 3
         circuits.append(c)
     return tfq.convert_to_tensor(circuits)
 
+# --- Define the Trainable Quantum Circuit (PQC/Ansatz) ---
+
+# Total number of parameters: 4 gates per layer * 3 layers = 12 symbols
+num_params = 12
+theta = sympy.symbols(f'theta_0:{num_params}') 
+
+quantum_circuit = cirq.Circuit()
+for i in range(NUM_LAYERS):
+    # Rotations (Rx, Ry alternating)
+    r_start = i * 4
+    quantum_circuit.append([
+        cirq.rx(theta[r_start + 0])(q0),
+        cirq.ry(theta[r_start + 1])(q1),
+        cirq.rx(theta[r_start + 2])(q2), 
+        cirq.ry(theta[r_start + 3])(q3),
+    ])
+    # Entanglement (All-to-all connectivity)
+    quantum_circuit.append(cirq.CZ(q0, q1))
+    quantum_circuit.append(cirq.CZ(q1, q2))
+    quantum_circuit.append(cirq.CZ(q2, q3))
+    quantum_circuit.append(cirq.CZ(q0, q3)) 
+    quantum_circuit.append(cirq.CZ(q1, q3)) 
+    quantum_circuit.append(cirq.CZ(q0, q2)) 
+
+# Measurement: Take the expectation value of the X operator on all 4 qubits and average
+measurement_op = [cirq.X(q0) + cirq.X(q1) + cirq.X(q2) + cirq.X(q3)] 
+
+# Keras functional model setup
 circuit_in = tf.keras.Input(shape=(), dtype=tf.string)
 
 pqc = tfq.layers.PQC(
-    cirq.Circuit(cirq.rx(sympy.Symbol('theta'))(q)), 
-    operators=cirq.X(q) 
+    quantum_circuit,
+    operators=measurement_op
 )
 
+# Classical layers follow the PQC output
 output = pqc(circuit_in)
 output = tf.keras.layers.Dense(16, activation='relu')(output)
-output = tf.keras.layers.Dense(1, activation='sigmoid')(output) 
+output = tf.keras.layers.Dense(1, activation='sigmoid')(output)
 
 model = tf.keras.Model(inputs=circuit_in, outputs=output)
 model.compile(optimizer=tf.keras.optimizers.Adam(0.01), loss='binary_crossentropy', metrics=['accuracy'])
-model.fit(convert_to_tensor(df_train_set['Q_Feature']), np.array(df_train_set['Label']), epochs=20, batch_size=32, verbose=0)
+# IMPORTANT: Pass the DataFrame slice of features, not just the single Q_Feature column
+model.fit(convert_to_tensor(df_train_set[FEATURE_COLS]), np.array(df_train_set['Label']), epochs=TRAINING_EPOCHS, batch_size=32, verbose=0) 
 
 print("✅ MODEL READY.")
 
-print("\\n🔮 PREDICTING NEXT 4H CANDLE...")
+print("\\n🔮 PREDICTING NEXT 24H CANDLE...") 
 
+# The model now predicts using the Series of 4 features
 raw_pred = model.predict(convert_to_tensor(X_predict), verbose=0)[0][0]
 
 if raw_pred > 0.5:
@@ -86,6 +146,7 @@ else:
     direction = "DOWN (Bearish)"
     conf = 1.0 - raw_pred
 
+# Confidence mapping logic (same as before)
 human_conf = (conf - 0.5) * 200 + 50
 human_conf = min(99.9, max(50.1, human_conf))
 
@@ -99,19 +160,27 @@ if human_conf > 85: advice = "CRITICAL ENTRY"
 print("\\n" + "="*85)
 print("| {a:<10} | {b:<10} | {c:<16} | {d:<12} | {e:<18} |".format(a='ASSET', b='TIMEFRAME', c='PREDICTION', d='CONFIDENCE', e='ADVICE'))
 print("="*85)
-print("| {a:<10} | {b:<10} | {c:<16} | {d:<3}%         | {e:<18} |".format(a=SYMBOL, b=TIMEFRAME, c=direction, d=int(human_conf), e=advice))
+print("| {a:<10} | {b:<10} | {c:<16} | {d:<3}%           | {e:<18} |".format(a=SYMBOL, b=TIMEFRAME, c=direction, d=int(human_conf), e=advice))
 print("="*85)
 
 # Final outputs
-print("\\nLast Q_Feature Input Value (Proximity to Sine Wave Peak): {X_predict:.4f}".format(X_predict=X_predict))
+# Print all 4 input features for diagnostic purposes
+print("\\nLast 4 Input Feature Values:")
+for feature_name, value in X_predict.items():
+    print(f"  {feature_name:<10}: {value:.4f}")
 print("Raw Model Output (P(UP)): {raw_pred:.4f}".format(raw_pred=raw_pred))
-# --- END CORE PREDICTOR SCRIPT ---
+
 """
 
 # Write the script to a temporary file
 script_filename = "run_crypto_predictor_core.py"
-with open(script_filename, "w") as f:
-    f.write(script_content)
+try:
+    with open(script_filename, "w") as f:
+        f.write(script_content)
+    # The message reflects the deeper entanglement and epochs:
+    print(f"✅ Core Prediction Script '{script_filename}' written to disk: 4-Qubit, 3-Layer PQC with Multi-Feature Encoding.")
+except IOError as e:
+    print(f"❌ ERROR: Could not write file '{script_filename}'. Details: {e}")
+    sys.exit(1)
 
-print(f"✅ Core Prediction Script '{script_filename}' written to disk.")
-print("The next cell (Cell 3) will execute this script using the Python 3.9 environment.")
+print(f"Execution of '{script_filename}' is deferred to the next cell (Cell 3).")
