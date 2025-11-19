@@ -1,0 +1,24 @@
+# --- CELL 1: INSTALL QUANTUM ENVIRONMENT & CRYPTO LIBRARIES (MANDATORY) ---
+import os
+import sys
+
+print("⏳ INSTALLING QUANTUM ENVIRONMENT & CRYPTO LIBRARIES... (This takes ~90 seconds)")
+
+# 1. Install Miniconda (Small version of Python 3.9)
+# We need Python 3.9 because TensorFlow Quantum is often more stable on this version
+os.system('wget -qO mini.sh https://repo.anaconda.com/miniconda/Miniconda3-py39_23.3.1-0-Linux-x86_64.sh')
+os.system('chmod +x mini.sh')
+os.system('bash ./mini.sh -b -f -p /usr/local > /dev/null')
+
+# 2. Install the specific libraries we need
+# Replace nba_api with ccxt (crypto) and ta (technical analysis)
+os.system('/usr/local/bin/conda install -y python=3.9 > /dev/null')
+os.system('/usr/local/bin/pip install -q tensorflow==2.15.0 tensorflow-quantum==0.7.3 cirq==1.3.0 sympy==1.12 ccxt ta pandas requests tqdm')
+
+# 3. Set up the path so Colab can "see" the new libraries
+sys.path.append('/usr/local/lib/python3.9/site-packages')
+
+# Fix a common protobuf version conflict
+os.system('/usr/local/bin/pip install -q "protobuf<4" > /dev/null')
+
+print("✅ INSTALLATION COMPLETE. You can now run the prediction cell.")
