@@ -1,0 +1,32 @@
+# --- CELL 3: EXECUTE THE CORE PREDICTION SCRIPT (Robust Output Capture) ---
+import os
+
+script_filename = "run_crypto_predictor_core.py"
+python_path = "/usr/local/bin/python"
+
+print(f"\n⚡ EXECUTING SCRIPT '{script_filename}' using Python 3.9 path (Capturing output)...")
+
+# Command to execute the script and redirect both stdout and stderr (2>&1)
+# This shell redirection ensures all output, including error messages, is sent to the output stream.
+command = f"{python_path} {script_filename} 2>&1"
+
+# Use os.popen to run the command and capture the output stream
+try:
+    with os.popen(command) as process:
+        # Read all output from the command
+        output = process.read()
+        
+        # Print the captured output directly
+        print(output)
+        
+        # If the output is empty, there was likely a critical, silent failure
+        if not output.strip():
+            print("---")
+            print("⚠️ WARNING: Script ran but produced NO output. Investigate 'run_crypto_predictor_core.py' for silent import or logic errors.")
+            print("---")
+
+except Exception as e:
+    # Catching any exception in the execution wrapper itself
+    print(f"❌ EXECUTION WRAPPER ERROR: Failed to run command via os.popen: {e}")
+
+print("\nExecution complete.")
