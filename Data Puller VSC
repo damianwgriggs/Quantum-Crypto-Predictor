@@ -1,4 +1,6 @@
 # --- DATA_FETCHER.PY: CLI Utility for Crypto Data & Feature Generation ---
+# FIXED VERSION: Preserves the "Live" candle for accurate future prediction.
+
 import pandas as pd
 import numpy as np
 import ccxt
@@ -15,23 +17,15 @@ from typing import Tuple, Optional, List
 def handle_kraken_symbol(exchange: ccxt.Exchange, symbol: str) -> str:
     """
     Handles Kraken's specific symbol naming conventions (e.g., XBT for BTC).
-    
-    Args:
-        exchange: The initialized ccxt exchange object.
-        symbol: The user-requested symbol (e.g., 'BTC/USDT').
-        
-    Returns:
-        The corrected symbol name for the exchange.
     """
     if exchange.id != 'kraken':
         return symbol
 
-    # Kraken might use XBT/USDT or XBT/USD instead of BTC/USDT.
     try:
         markets = exchange.load_markets()
     except Exception as e:
         print(f"❌ ERROR loading markets for Kraken: {e}")
-        return symbol # Fallback to original symbol if market load fails
+        return symbol 
 
     if symbol in markets:
         return symbol
@@ -42,22 +36,11 @@ def handle_kraken_symbol(exchange: ccxt.Exchange, symbol: str) -> str:
         print(f"⚠️ WARNING: {symbol} not found on Kraken, using XBT/USD.")
         return 'XBT/USD'
     else:
-        # Default to user's symbol if alternatives not found
         return symbol
 
 def fetch_historical_data(exchange: ccxt.Exchange, symbol: str, timeframe: str, target_limit: int, chunk_limit: int = 700) -> List[list]:
     """
     Iteratively fetches OHLCV data using pagination to overcome single-call limits.
-    
-    Args:
-        exchange: Initialized ccxt exchange object.
-        symbol: The trading pair symbol to fetch.
-        timeframe: The candle interval (e.g., '4h').
-        target_limit: The maximum number of candles to try to fetch.
-        chunk_limit: The maximum number of candles to request per API call.
-        
-    Returns:
-        A list of OHLCV candles (lists).
     """
     all_ohlcv = []
     since = None
@@ -66,11 +49,9 @@ def fetch_historical_data(exchange: ccxt.Exchange, symbol: str, timeframe: str, 
     print(f"🔄 Starting iterative fetch (Chunk Limit: {chunk_limit} per call)...")
 
     while fetched_count < target_limit:
-        # Determine how many candles to fetch in this chunk (capped at chunk_limit)
         limit = min(chunk_limit, target_limit - fetched_count)
         
         try:
-            # The 'since' parameter tells the exchange to fetch data *starting* at this timestamp
             ohlcv_chunk = exchange.fetch_ohlcv(symbol, timeframe, since=since, limit=limit)
         except Exception as e:
             print(f"⚠️ WARNING: Fetch failed on chunk, stopping. Error: {e}")
@@ -79,48 +60,38 @@ def fetch_historical_data(exchange: ccxt.Exchange, symbol: str, timeframe: str, 
         if not ohlcv_chunk:
             break
 
-        # Prepend the new data chunk (since we are fetching backwards in time)
         all_ohlcv = ohlcv_chunk + all_ohlcv
         fetched_count = len(all_ohlcv)
 
         # Set 'since' for the next (older) chunk to the timestamp of the oldest candle fetched
-        # This is the timestamp of the first element in the ohlcv_chunk list.
         since = ohlcv_chunk[0][0] 
         
         print(f"   -> Fetched {len(ohlcv_chunk)} more. Total: {fetched_count} / Target: {target_limit}")
         
-        # If the chunk size returned is less than the limit requested, we have reached the end of history
         if len(ohlcv_chunk) < limit:
             print("   -> Reached the start of available history.")
             break
             
-        # Add a small delay to respect exchange rate limits
         time.sleep(exchange.rateLimit / 1000)
 
     return all_ohlcv
 
 def fetch_and_process_data(exchange_id: str, symbol: str, timeframe: str, lookback_candles: int) -> Optional[pd.DataFrame]:
     """
-    Orchestrates the iterative data fetching, generates features, and returns the cleaned DataFrame.
+    Orchestrates the iterative data fetching and creates the DataFrame.
     """
-    # The 'lookback_candles' is now the TARGET limit.
     print(f"📡 STARTING ITERATIVE FETCH for TARGET {lookback_candles} CANDLES for {symbol} ({timeframe}) on {exchange_id.upper()}...")
 
     try:
-        # Initialize the exchange
         exchange = getattr(ccxt, exchange_id)()
-        
-        # Determine the correct symbol to fetch
         fetch_symbol = handle_kraken_symbol(exchange, symbol)
         
-        # Fetch OHLCV data iteratively
         ohlcv = fetch_historical_data(exchange, fetch_symbol, timeframe, lookback_candles)
         
         if not ohlcv:
             print("❌ DATA FETCH FAILED. Could not retrieve any OHLCV data.")
             return None
             
-        # Create the DataFrame
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         df['date'] = pd.to_datetime(df['timestamp'], unit='ms')
         df.set_index('date', inplace=True)
@@ -138,45 +109,58 @@ def fetch_and_process_data(exchange_id: str, symbol: str, timeframe: str, lookba
 
 def generate_features(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Applies the custom feature engineering and target generation logic.
+    Applies feature engineering and FIXES the 'Live Prediction Row' issue.
     """
     print("📈 CALCULATING TECHNICAL FEATURES...")
     
     # --- Feature Engineering ---
-    # 1. Relative Strength Index (RSI)
     df['RSI'] = ta.momentum.RSIIndicator(df['close'], window=14).rsi()
     
-    # 2. Moving Average Convergence Divergence (MACD) Histogram
     macd_indicator = ta.trend.MACD(df['close'], window_fast=12, window_slow=26, window_sign=9)
     df['MACD_Hist'] = macd_indicator.macd_diff()
     
-    # 3. Logarithm of Volume
     df['Log_Volume'] = np.log1p(df['volume']) 
 
     # --- Normalization ---
     df['RSI_Norm'] = (df['RSI'] - 50) / 50.0
-    
-    # Use the entire column's mean absolute deviation for stable MACD normalization
     df['MACD_Norm'] = df['MACD_Hist'] / df['MACD_Hist'].abs().mean()
-    
-    # Volume is normalized by percent change, clipped to control noise
     df['Vol_Norm'] = df['Log_Volume'].pct_change().clip(-0.5, 0.5)
 
     # --- Quantum Input Feature (Q_Feature) ---
-    # This combines the normalized features into a single input for the PQC
     df['Q_Feature'] = (df['RSI_Norm'] + df['MACD_Norm'] + df['Vol_Norm']) / 3.0
     df['Q_Feature'] = df['Q_Feature'].clip(-0.5, 0.5)
 
     # --- Binary Target (Label) ---
-    # Target is 1 if the NEXT candle's close is higher than the CURRENT close, 0 otherwise.
+    # Target is 1 if the NEXT candle's close is higher than the CURRENT close.
     df['Label'] = (df['close'].shift(-1) > df['close']).astype(int)
 
-    # Clean up NaN values created by indicators (e.g., initial 26 periods) and the target shift
-    df.dropna(inplace=True)
+    # =================================================================
+    # 🛑 CRITICAL FIX: PRESERVE THE LIVE CANDLE (LAST ROW)
+    # =================================================================
+    
+    # 1. Isolate the very last row (the Live candle) BEFORE dropping NaNs.
+    # We need this specific row for the prediction, even though its Label is technically unknown.
+    df_live_prediction = df.iloc[[-1]].copy()
+    
+    # 2. Isolate the historical data (everything except the last row).
+    df_history = df.iloc[:-1].copy()
+    
+    # 3. Clean the history. 
+    # This removes the first 14-26 rows where RSI/MACD are NaN.
+    df_history.dropna(inplace=True)
+    
+    # 4. Set a placeholder label for the live row (since we don't know the future yet).
+    # The predictor script ignores this label for the prediction step anyway.
+    df_live_prediction['Label'] = 0 
+    
+    # 5. Recombine them: Clean History + 1 Live Row
+    df_final = pd.concat([df_history, df_live_prediction])
 
-    # VITAL LOGICAL CHANGE: Select ALL FOUR normalized features plus the Label
-    # The four features will be mapped directly to the four qubits in Colab Cell 2.
-    df_final = df[['RSI_Norm', 'MACD_Norm', 'Vol_Norm', 'Q_Feature', 'Label']].copy()
+    print(f"   -> History samples (Training): {len(df_history)}")
+    print(f"   -> Live sample (Prediction): 1")
+
+    # Select final columns
+    df_final = df_final[['RSI_Norm', 'MACD_Norm', 'Vol_Norm', 'Q_Feature', 'Label']]
     
     return df_final
 
@@ -185,56 +169,35 @@ def generate_features(df: pd.DataFrame) -> pd.DataFrame:
 # =========================================================================
 
 def main():
-    """
-    Main function to parse arguments, fetch data, process, and save the output.
-    """
-    # 1. Define Command Line Arguments
     parser = argparse.ArgumentParser(
-        description="""
-Quantum Crypto Data Collector: Fetches OHLCV data, calculates Q_Feature, and saves a training/prediction CSV.
-
-NOTE: Default exchange is set to 'kraken' to bypass common IP blocking issues 
-often encountered when fetching public data from 'binance' in local environments.
-The script now uses iterative fetching (pagination) to retrieve data 
-beyond the exchange's single-call limit (e.g., Kraken's ~720 candle limit).
-        """,
+        description="Quantum Crypto Data Collector (FIXED VERSION)",
         formatter_class=argparse.RawTextHelpFormatter
     )
     
-    # Set current values as robust defaults
-    parser.add_argument('-e', '--exchange', type=str, default='kraken', 
-                        help='Exchange ID to use (e.g., binance, kraken, bybit). Default: kraken')
-    parser.add_argument('-s', '--symbol', type=str, default='BTC/USDT', 
-                        help='Trading pair symbol (e.g., BTC/USDT, ETH/USD). Default: BTC/USDT')
-    parser.add_argument('-t', '--timeframe', type=str, default='4h', 
-                        help='Candle interval (e.g., 1h, 4h, 1d). Default: 4h')
-    # Increased default lookback to 5000 for aggressive historical fetching.
-    parser.add_argument('-l', '--lookback', type=int, default=5000, 
-                        help='Target number of historical candles to fetch (fetched iteratively). Default: 5000')
-    parser.add_argument('-o', '--output', type=str, default='crypto_data.csv', 
-                        help='Output filename for the feature CSV. Default: crypto_data.csv')
+    parser.add_argument('-e', '--exchange', type=str, default='kraken', help='Exchange ID')
+    parser.add_argument('-s', '--symbol', type=str, default='BTC/USDT', help='Trading pair symbol')
+    parser.add_argument('-t', '--timeframe', type=str, default='4h', help='Candle interval')
+    parser.add_argument('-l', '--lookback', type=int, default=5000, help='Historical candles target')
+    parser.add_argument('-o', '--output', type=str, default='crypto_data.csv', help='Output filename')
 
     args = parser.parse_args()
     
-    # 2. Fetch and Process
     df = fetch_and_process_data(args.exchange, args.symbol, args.timeframe, args.lookback)
     
     if df is None or df.empty:
-        print("🛑 PROCESS ABORTED due to data fetch failure or empty dataset.")
+        print("🛑 PROCESS ABORTED due to data fetch failure.")
         sys.exit(1)
         
     df_final = generate_features(df)
     
     if df_final.empty:
-        print("🛑 PROCESS ABORTED: Feature generation resulted in an empty dataset after cleanup.")
+        print("🛑 PROCESS ABORTED: Feature generation resulted in empty dataset.")
         sys.exit(1)
 
-    # 3. Save the file
     df_final.to_csv(args.output, index=False)
-    print(f"\n✅ SUCCESS! Saved '{args.output}' with {len(df_final)} samples for prediction.")
-    print("👉 Next step: Upload this file to your Google Colab envi" \
-    "ronment to run Cell 2.")
-
+    print(f"\n✅ SUCCESS! Saved '{args.output}' with {len(df_final)} samples.")
+    print("   The LAST row in this file is now the 'Live' candle for prediction.")
+    print("👉 Next step: Upload this file to Colab and run Cell 2.")
 
 if __name__ == '__main__':
     main()
