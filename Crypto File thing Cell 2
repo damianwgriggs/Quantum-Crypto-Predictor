@@ -17,18 +17,19 @@ import numpy as np
 import warnings
 
 # --- CONFIG ---
-CSV_FILENAME = 'crypto_data.csv'
-SYMBOL = 'BTC/USDT'
-TIMEFRAME = '1d' 
+# Ensure this CSV file contains Ethereum data!
+CSV_FILENAME = 'crypto_data.csv' 
+SYMBOL = 'ETH/USDT'  # <--- CHANGED: Converted to Ethereum
+TIMEFRAME = '1d'
 NUM_QUBITS = 4
-NUM_LAYERS = 3 
-TRAINING_EPOCHS = 50 
+NUM_LAYERS = 3
+TRAINING_EPOCHS = 50
 
 # Define the 4 features we will encode
 FEATURE_COLS = ['RSI_Norm', 'MACD_Norm', 'Vol_Norm', 'Q_Feature']
 
 if not os.path.exists(CSV_FILENAME):
-    print("❌ ERROR: '{CSV_FILENAME}' is missing.\\n👉 Run a data fetching script and upload the CSV.".format(CSV_FILENAME=CSV_FILENAME))
+    print("❌ ERROR: '{CSV_FILENAME}' is missing.\\n👉 Run a data fetching script for ETH and upload the CSV.".format(CSV_FILENAME=CSV_FILENAME))
     sys.exit(1)
 
 # Suppress TensorFlow and Python warnings
@@ -37,7 +38,7 @@ warnings.filterwarnings("ignore")
 # Redirect stderr to stdout to keep the output clean
 sys.stderr = sys.stdout
 
-print("⏳ INITIALIZING QUANTUM ENVIRONMENT...")
+print("⏳ INITIALIZING QUANTUM ENVIRONMENT FOR " + SYMBOL + "...")
 try:
     import tensorflow as tf
     import tensorflow_quantum as tfq
@@ -56,15 +57,15 @@ df_train = pd.read_csv(CSV_FILENAME)
 df_train_set = df_train.iloc[:-1]
 
 # Use the last row for the final prediction input
-X_predict = df_train.iloc[-1][FEATURE_COLS] # <--- UPDATED: Selecting all 4 features for prediction
+X_predict = df_train.iloc[-1][FEATURE_COLS] 
 
 print("✅ DATA LOADED. Training on {length} samples with {num_feat} features.".format(length=len(df_train_set), num_feat=len(FEATURE_COLS)))
 
-print("\\n🧠 TRAINING (4-Qubit PQC, 3 Layers, Multi-Feature Encoded)...") # <--- UPDATED print
+print("\\n🧠 TRAINING (4-Qubit PQC, 3 Layers, Multi-Feature Encoded)...") 
 
 # Define the 4 qubits
 q0, q1, q2, q3 = cirq.GridQubit(0, 0), cirq.GridQubit(0, 1), cirq.GridQubit(1, 0), cirq.GridQubit(1, 1)
-qubits = [q0, q1, q2, q3] 
+qubits = [q0, q1, q2, q3]
 
 def convert_to_tensor(features_df):
     \"\"\"Encodes the 4 features onto the 4 qubits using Ry rotations.\"\"\"
@@ -91,7 +92,7 @@ def convert_to_tensor(features_df):
 
 # Total number of parameters: 4 gates per layer * 3 layers = 12 symbols
 num_params = 12
-theta = sympy.symbols(f'theta_0:{num_params}') 
+theta = sympy.symbols(f'theta_0:{num_params}')
 
 quantum_circuit = cirq.Circuit()
 for i in range(NUM_LAYERS):
@@ -100,19 +101,19 @@ for i in range(NUM_LAYERS):
     quantum_circuit.append([
         cirq.rx(theta[r_start + 0])(q0),
         cirq.ry(theta[r_start + 1])(q1),
-        cirq.rx(theta[r_start + 2])(q2), 
+        cirq.rx(theta[r_start + 2])(q2),
         cirq.ry(theta[r_start + 3])(q3),
     ])
     # Entanglement (All-to-all connectivity)
     quantum_circuit.append(cirq.CZ(q0, q1))
     quantum_circuit.append(cirq.CZ(q1, q2))
     quantum_circuit.append(cirq.CZ(q2, q3))
-    quantum_circuit.append(cirq.CZ(q0, q3)) 
-    quantum_circuit.append(cirq.CZ(q1, q3)) 
-    quantum_circuit.append(cirq.CZ(q0, q2)) 
+    quantum_circuit.append(cirq.CZ(q0, q3))
+    quantum_circuit.append(cirq.CZ(q1, q3))
+    quantum_circuit.append(cirq.CZ(q0, q2))
 
 # Measurement: Take the expectation value of the X operator on all 4 qubits and average
-measurement_op = [cirq.X(q0) + cirq.X(q1) + cirq.X(q2) + cirq.X(q3)] 
+measurement_op = [cirq.X(q0) + cirq.X(q1) + cirq.X(q2) + cirq.X(q3)]
 
 # Keras functional model setup
 circuit_in = tf.keras.Input(shape=(), dtype=tf.string)
@@ -130,11 +131,11 @@ output = tf.keras.layers.Dense(1, activation='sigmoid')(output)
 model = tf.keras.Model(inputs=circuit_in, outputs=output)
 model.compile(optimizer=tf.keras.optimizers.Adam(0.01), loss='binary_crossentropy', metrics=['accuracy'])
 # IMPORTANT: Pass the DataFrame slice of features, not just the single Q_Feature column
-model.fit(convert_to_tensor(df_train_set[FEATURE_COLS]), np.array(df_train_set['Label']), epochs=TRAINING_EPOCHS, batch_size=32, verbose=0) 
+model.fit(convert_to_tensor(df_train_set[FEATURE_COLS]), np.array(df_train_set['Label']), epochs=TRAINING_EPOCHS, batch_size=32, verbose=0)
 
 print("✅ MODEL READY.")
 
-print("\\n🔮 PREDICTING NEXT 24H CANDLE...") 
+print("\\n🔮 PREDICTING NEXT 24H CANDLE...")
 
 # The model now predicts using the Series of 4 features
 raw_pred = model.predict(convert_to_tensor(X_predict), verbose=0)[0][0]
@@ -177,10 +178,9 @@ script_filename = "run_crypto_predictor_core.py"
 try:
     with open(script_filename, "w") as f:
         f.write(script_content)
-    # The message reflects the deeper entanglement and epochs:
-    print(f"✅ Core Prediction Script '{script_filename}' written to disk: 4-Qubit, 3-Layer PQC with Multi-Feature Encoding.")
+    print(f"✅ Core Prediction Script '{script_filename}' written to disk: 4-Qubit, 3-Layer PQC configured for ETH/USDT.")
 except IOError as e:
     print(f"❌ ERROR: Could not write file '{script_filename}'. Details: {e}")
     sys.exit(1)
 
-print(f"Execution of '{script_filename}' is deferred to the next cell (Cell 3).")
+print(f"Execution of '{script_filename}' is deferred to the next cell.")
