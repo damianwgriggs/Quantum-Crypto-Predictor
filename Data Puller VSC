@@ -1,5 +1,6 @@
 # --- DATA_FETCHER.PY: CLI Utility for Crypto Data & Feature Generation ---
 # FIXED VERSION: Preserves the "Live" candle for accurate future prediction.
+# CONVERTED FOR: ETH/USD (ETH/USDC)
 
 import pandas as pd
 import numpy as np
@@ -16,7 +17,8 @@ from typing import Tuple, Optional, List
 
 def handle_kraken_symbol(exchange: ccxt.Exchange, symbol: str) -> str:
     """
-    Handles Kraken's specific symbol naming conventions (e.g., XBT for BTC).
+    Handles Kraken's symbol naming conventions. 
+    Updated to prioritize ETH pairs (ETH/USDC, ETH/USD).
     """
     if exchange.id != 'kraken':
         return symbol
@@ -27,15 +29,24 @@ def handle_kraken_symbol(exchange: ccxt.Exchange, symbol: str) -> str:
         print(f"❌ ERROR loading markets for Kraken: {e}")
         return symbol 
 
+    # 1. Check if the requested symbol (e.g., ETH/USDC) exists directly
     if symbol in markets:
         return symbol
-    elif 'XBT/USDT' in markets:
-        print(f"⚠️ WARNING: {symbol} not found on Kraken, using XBT/USDT.")
-        return 'XBT/USDT'
-    elif 'XBT/USD' in markets:
-        print(f"⚠️ WARNING: {symbol} not found on Kraken, using XBT/USD.")
-        return 'XBT/USD'
+    
+    # 2. If specific symbol not found, try standard ETH fallbacks on Kraken
+    print(f"⚠️ WARNING: {symbol} not found exactly on Kraken. Attempting fallbacks...")
+    
+    if 'ETH/USDC' in markets:
+        print(f"   -> Switching to ETH/USDC")
+        return 'ETH/USDC'
+    elif 'ETH/USD' in markets:
+        print(f"   -> Switching to ETH/USD")
+        return 'ETH/USD'
+    elif 'ETH/USDT' in markets:
+        print(f"   -> Switching to ETH/USDT")
+        return 'ETH/USDT'
     else:
+        # Return original if no fallbacks found
         return symbol
 
 def fetch_historical_data(exchange: ccxt.Exchange, symbol: str, timeframe: str, target_limit: int, chunk_limit: int = 700) -> List[list]:
@@ -170,12 +181,13 @@ def generate_features(df: pd.DataFrame) -> pd.DataFrame:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Quantum Crypto Data Collector (FIXED VERSION)",
+        description="Quantum Crypto Data Collector (ETH VERSION)",
         formatter_class=argparse.RawTextHelpFormatter
     )
     
     parser.add_argument('-e', '--exchange', type=str, default='kraken', help='Exchange ID')
-    parser.add_argument('-s', '--symbol', type=str, default='BTC/USDT', help='Trading pair symbol')
+    # UPDATED DEFAULT TO ETH/USDC
+    parser.add_argument('-s', '--symbol', type=str, default='ETH/USDC', help='Trading pair symbol')
     parser.add_argument('-t', '--timeframe', type=str, default='4h', help='Candle interval')
     parser.add_argument('-l', '--lookback', type=int, default=5000, help='Historical candles target')
     parser.add_argument('-o', '--output', type=str, default='crypto_data.csv', help='Output filename')
@@ -201,3 +213,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+    
